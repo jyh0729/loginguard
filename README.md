@@ -156,6 +156,17 @@ bash deploy/destroy.sh         # 실습 후 정리 (비용 방지)
 
 `.github/workflows/ci.yml`: push·PR마다 테스트(pytest) → Docker 빌드 → 컨테이너 띄워 `/health`, `/predict` 호출까지 자동 확인
 
+### 8.6 추가 실험: 실제 SSH 로그인 공격 실시간 판정
+
+```bash
+COLLECT_SSH=1 bash deploy/deploy.sh
+```
+
+- 보안 그룹에 22번 포트를 열고, 서버에 `deploy/ssh_collector.py`를 systemd 서비스로 띄운다
+- 수집기는 sshd 로그를 읽어 인터넷에서 실제로 들어오는 로그인 시도(계정 이름, IP, 성공/실패)를 `/predict`로 보낸다 → 관제 화면에 실시간 표시, 판정·로그 저장
+- 비밀번호 로그인은 꺼져 있어(Amazon Linux 기본, 키 로그인만 허용) 시도는 기록되지만 들어올 수 없다
+- 들어오는 시도는 거의 모두 공격이라 학습용이 아니라, **학습 때 본 적 없는 실제 공격을 잡는지** 확인하는 용도다
+
 ## 9. 한계
 
 - RBA는 실제 기록을 바탕으로 **합성한** 데이터라 실제 서비스에서는 다시 검증이 필요
