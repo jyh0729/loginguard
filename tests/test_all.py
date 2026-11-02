@@ -66,7 +66,7 @@ def client(trained):
 
 def test_health_ready(client):
     c, _, _ = client
-    assert c.get("/health").json() == {"status": "ok"}
+    assert c.get("/health").json()["status"] == "ok"
     assert c.get("/ready").json()["ready"] is True
 
 

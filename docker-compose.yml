@@ -1,0 +1,18 @@
+services:
+  loginguard:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    image: loginguard:${APP_VERSION:-dev}
+    container_name: loginguard
+    ports:
+      - "${HOST_PORT:-8000}:8000"        # EC2 에서는 HOST_PORT=80
+    environment:
+      APP_VERSION: ${APP_VERSION:-dev}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      CLOUDWATCH_LOG_GROUP: ${CLOUDWATCH_LOG_GROUP:-}   # 비어 있으면 파일 로그만
+      LOG_FILE: logs/predictions.jsonl
+    volumes:
+      - ./logs:/app/logs                  # 예측·정답 로그는 컨테이너가 바뀌어도 남도록 호스트에 저장
+    restart: unless-stopped

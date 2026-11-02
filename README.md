@@ -102,8 +102,63 @@ CSV=data/rba-dataset.csv uvicorn api:app --port 8000
 pytest -q          # 실제 데이터 없이 가짜 RBA 형식 데이터로 테스트
 ```
 
-## 8. 한계
+## 8. 컨테이너와 배포 (8주차)
+
+### 8.1 Docker / docker compose
+
+```bash
+docker compose up -d --build        # http://localhost:8000/
+```
+
+- `Dockerfile`: python:3.12-slim, 의존성 층을 먼저 설치해 코드만 바뀌면 빌드가 빠르다. `HEALTHCHECK`로 `/health` 확인
+- `start.sh`: `models/model.joblib`이 없으면 데모 데이터로 작은 모델을 학습한 뒤 서버를 띄운다 (실제 RBA 모델은 Colab에서 학습한 파일을 `models/`에 넣어 빌드)
+- `docker-compose.yml`: 포트(`HOST_PORT`), 버전(`APP_VERSION`), CloudWatch 로그 그룹을 환경변수로 받고, 로그 폴더는 호스트에 남긴다
+- `/health`가 `{"status":"ok","version":"<git 커밋>"}`을 돌려줘서 어떤 버전이 떠 있는지 바로 확인할 수 있다
+
+### 8.2 배포 인프라 (EC2)
+
+```
+개발자 ─ git push ─▶ GitHub (week8)
+                        │  git clone
+CloudShell ─ deploy.sh ─▶ EC2 (Amazon Linux 2023, t3.small)
+                             └ Docker: loginguard 컨테이너 (80 → 8000)
+                                  └ 로그 → CloudWatch Logs /loginguard/predictions
+사용자(관제 담당자) ─ 웹 브라우저 ─▶ http://<EC2 공인 IP>/
+```
+
+- **EC2를 고른 이유**: 서버 한 대에 컨테이너 하나라 구성이 단순하고, 실습 계정(Learner Lab)에서 바로 쓸 수 있다. 트래픽이 늘면 ECS(Fargate) + ALB로 옮길 수 있다
+- 보안 그룹은 80번 포트만 연다. SSH 키 없이 배포한다 (서버에 직접 들어가 고치지 않음)
+- 인스턴스 프로파일(`LabInstanceProfile`)이 있으면 컨테이너가 키 없이 CloudWatch로 로그를 보낸다
+
+### 8.3 배포 자동화 (AWS CLI 스크립트)
+
+CloudShell에서 실행한다. 콘솔 권한을 그대로 쓰므로 액세스 키 입력이 필요 없다.
+
+```bash
+git clone -b week8 https://github.com/jyh0729/loginguard.git && cd loginguard
+bash deploy/deploy.sh          # 배포 (약 5분)
+bash deploy/destroy.sh         # 실습 후 정리 (비용 방지)
+```
+
+`deploy.sh`는 매번 **같은 방식으로 새 서버를 만든다** (불변 배포).
+
+1. 보안 그룹 준비 → 2. 최신 Amazon Linux 2023으로 EC2 생성, user-data가 GitHub 코드로 이미지 빌드·실행
+3. 새 서버의 `/health`가 **방금 배포한 커밋 버전**으로 응답할 때까지 대기
+4. 확인되면 이전 버전 인스턴스 종료 (실패하면 이전 버전 유지)
+
+### 8.4 수정 후 재배포 확인
+
+1. `console.html`의 제목 문구를 바꿔 `week8`에 push
+2. `bash deploy/deploy.sh` 다시 실행
+3. `/health`의 `version`이 새 커밋으로 바뀌고 화면 문구가 바뀐 것을 확인
+
+### 8.5 CI (GitHub Actions)
+
+`.github/workflows/ci.yml`: push·PR마다 테스트(pytest) → Docker 빌드 → 컨테이너 띄워 `/health`, `/predict` 호출까지 자동 확인
+
+## 9. 한계
 
 - RBA는 실제 기록을 바탕으로 **합성한** 데이터라 실제 서비스에서는 다시 검증이 필요
 - API의 계정·IP 기록은 서버 메모리에 있어 재시작하면 초기화됨 (운영 시 Redis 등 외부 저장소 필요)
 - 관제 화면의 실시간 수신은 데모용으로 데이터셋 기록을 재생함
+- 배포 서버는 데모 데이터로 학습한 모델을 쓴다 (실제 RBA 모델 파일은 용량 때문에 저장소에 없음). 운영 시 S3에 모델을 두고 시작할 때 받아 오도록 바꿀 계획
