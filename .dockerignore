@@ -1,0 +1,10 @@
+.git
+.github
+__pycache__
+*/__pycache__
+.pytest_cache
+logs
+data
+*.log
+deploy
+*.ipynb

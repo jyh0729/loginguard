@@ -187,9 +187,12 @@ app = FastAPI(title="LoginGuard", version="2.0.0",
               description="로그인 1건을 받아 공격자 접근 위험을 판정하는 보안 관제 API (allow / verify / block)")
 
 
+APP_VERSION = os.getenv("APP_VERSION", "dev")   # 배포 스크립트가 git 커밋 해시를 넣는다
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/ready")
