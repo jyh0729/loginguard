@@ -121,9 +121,14 @@ def test_console_page_and_stream(client):
             break
         time.sleep(0.2)
     assert api.stream["pool"].startswith("ready"), api.stream
-    time.sleep(1)
+    ok = False
+    for _ in range(50):  # 수신 루프가 이전 간격(최대 1.5초)만큼 자고 있을 수 있어 최대 5초 기다림
+        if any(e["source"] == "stream" for e in c.get("/api/state").json()["events"]):
+            ok = True
+            break
+        time.sleep(0.1)
     c.post("/api/stream", json={"running": False})
-    assert any(e["source"] == "stream" for e in c.get("/api/state").json()["events"])
+    assert ok
 
 
 def test_model_missing_503(client):
