@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 배포한 LoginGuard EC2 와 보안 그룹을 모두 지운다 (실습 끝나고 비용이 나가지 않도록).
+# 배포한 LoginGuard EC2, 탄력적 IP, 보안 그룹을 모두 지운다 (실습 끝나고 비용이 나가지 않도록).
 #   bash deploy/destroy.sh
 set -euo pipefail
 export AWS_DEFAULT_REGION="${REGION:-${AWS_REGION:-us-east-1}}"
@@ -14,5 +14,9 @@ fi
 SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=loginguard-web --query 'SecurityGroups[0].GroupId' --output text)
 if [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ]; then
   aws ec2 delete-security-group --group-id "$SG_ID" && echo "보안 그룹 삭제: $SG_ID"
+fi
+ALLOC_ID=$(aws ec2 describe-addresses --filters Name=tag:App,Values=loginguard --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)
+if [ -n "$ALLOC_ID" ] && [ "$ALLOC_ID" != "None" ]; then
+  aws ec2 release-address --allocation-id "$ALLOC_ID" && echo "탄력적 IP 반납: $ALLOC_ID"
 fi
 echo "정리 완료"

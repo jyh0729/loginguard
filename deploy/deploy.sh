@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # LoginGuard EC2 배포 자동화 (AWS CLI). AWS CloudShell 에서 실행한다 (콘솔 권한을 그대로 써서 키 입력 불필요).
 #
-#   bash deploy/deploy.sh                 # week8 브랜치 최신 커밋 배포
-#   BRANCH=main bash deploy/deploy.sh     # 다른 브랜치
+#   bash deploy/deploy.sh                       # 지금 체크아웃한 브랜치의 최신 커밋 배포 (데모 모델, 약 5분)
+#   MODEL_SOURCE=rba bash deploy/deploy.sh      # 서버가 실제 RBA 데이터를 받아 학습 (약 15~20분, t3.large)
+#   COLLECT_SSH=1 bash deploy/deploy.sh         # 실제 SSH 로그인 시도 수집기도 켜기
+#   USE_EIP=0 bash deploy/deploy.sh             # 고정 주소(탄력적 IP) 없이
 #
 # 동작 (매번 같은 방식으로 새 환경을 만든다 = 불변 배포)
 #   1. 보안 그룹(80번 포트) 준비
 #   2. 최신 Amazon Linux 2023 으로 새 EC2 생성 → user-data 가 GitHub 코드로 Docker 이미지 빌드 후 실행
 #   3. 새 서버의 /health 가 지금 배포한 커밋 버전으로 응답할 때까지 대기
-#   4. 확인되면 이전 버전 인스턴스 종료 (확인 실패 시 이전 버전은 그대로 둠)
+#   4. 확인되면 고정 주소(탄력적 IP)를 새 서버로 옮기고 이전 버전 인스턴스 종료 (확인 실패 시 이전 버전 유지)
 set -euo pipefail
 
 REGION="${REGION:-${AWS_REGION:-us-east-1}}"
 REPO_URL="${REPO_URL:-https://github.com/jyh0729/loginguard.git}"
-BRANCH="${BRANCH:-week8}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t3.small}"
+BRANCH="${BRANCH:-$(git -C "$(dirname "$0")" rev-parse --abbrev-ref HEAD 2>/dev/null || echo week8)}"
+MODEL_SOURCE="${MODEL_SOURCE:-demo}"   # demo: 가짜 데이터로 빠르게 / rba: 실제 RBA 데이터로 서버에서 학습
+RBA_ROWS="${RBA_ROWS:-2000000}"
+if [ "$MODEL_SOURCE" = "rba" ]; then DEFAULT_TYPE=t3.large; MAX_WAIT_MIN=30; else DEFAULT_TYPE=t3.small; MAX_WAIT_MIN=10; fi
+INSTANCE_TYPE="${INSTANCE_TYPE:-$DEFAULT_TYPE}"
+USE_EIP="${USE_EIP:-1}"
 INSTANCE_PROFILE="${INSTANCE_PROFILE:-LabInstanceProfile}"   # CloudWatch 로그용 권한 (없으면 파일 로그만)
 LOG_GROUP="${LOG_GROUP:-/loginguard/predictions}"
 COLLECT_SSH="${COLLECT_SSH:-0}"   # 1: 22번 포트를 열고 서버에 실제로 들어오는 SSH 로그인 시도를 수집해 판정
@@ -27,7 +33,7 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 COMMIT=$(git ls-remote "$REPO_URL" "refs/heads/$BRANCH" | cut -c1-7)
 [ -n "$COMMIT" ] || { echo "브랜치 $BRANCH 를 찾을 수 없습니다"; exit 1; }
-log "배포 대상: $REPO_URL  브랜치 $BRANCH  커밋 $COMMIT  리전 $REGION"
+log "배포 대상: $REPO_URL  브랜치 $BRANCH  커밋 $COMMIT  리전 $REGION  모델 $MODEL_SOURCE"
 
 # 1. 보안 그룹
 VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
@@ -63,6 +69,7 @@ OLD_IDS=$(aws ec2 describe-instances --filters "Name=tag:App,Values=$APP" "Name=
 # 3. 새 인스턴스
 UD_FILE=$(mktemp)
 sed -e "s|__REPO_URL__|$REPO_URL|" -e "s|__BRANCH__|$BRANCH|" -e "s|__REGION__|$REGION|" -e "s|__LOG_GROUP__|$LOG_GROUP|" -e "s|__COLLECT_SSH__|$COLLECT_SSH|" \
+    -e "s|__MODEL_SOURCE__|$MODEL_SOURCE|" -e "s|__RBA_ROWS__|$RBA_ROWS|" \
     "$HERE/user-data.sh" > "$UD_FILE"
 
 run() {
@@ -81,27 +88,51 @@ rm -f "$UD_FILE"
 log "새 인스턴스: $NEW_ID ($INSTANCE_TYPE) — 시작 대기"
 aws ec2 wait instance-running --instance-ids "$NEW_ID"
 IP=$(aws ec2 describe-instances --instance-ids "$NEW_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-log "공인 IP: $IP — Docker 빌드·실행 대기 (보통 3~6분)"
+if [ "$MODEL_SOURCE" = "rba" ]; then
+  log "공인 IP: $IP — Docker 빌드 + RBA 데이터 받기·학습 대기 (보통 15~20분)"
+else
+  log "공인 IP: $IP — Docker 빌드·실행 대기 (보통 3~6분)"
+fi
 
 # 4. 헬스 체크 (지금 배포한 커밋 버전으로 응답해야 성공)
-for i in $(seq 1 60); do
+STEPS=$((MAX_WAIT_MIN * 6))
+for i in $(seq 1 "$STEPS"); do
   BODY=$(curl -s -m 5 "http://$IP/health" || true)
   if echo "$BODY" | grep -q "\"version\":\"$COMMIT\""; then
     log "헬스 체크 성공: $BODY"
     break
   fi
-  [ "$i" -eq 60 ] && { log "10분 안에 응답이 없습니다. 이전 버전은 유지합니다. 새 인스턴스 로그: /var/log/loginguard-deploy.log"; exit 1; }
+  [ "$i" -eq "$STEPS" ] && { log "${MAX_WAIT_MIN}분 안에 응답이 없습니다. 이전 버전은 유지합니다. 새 인스턴스 로그: /var/log/loginguard-deploy.log"; exit 1; }
   sleep 10
 done
 
-# 5. 이전 버전 정리
+# 5. 고정 주소(탄력적 IP)를 새 서버로 옮기기
+if [ "$USE_EIP" = "1" ]; then
+  ALLOC_ID=$(aws ec2 describe-addresses --filters "Name=tag:App,Values=$APP" --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)
+  if [ -z "$ALLOC_ID" ] || [ "$ALLOC_ID" = "None" ]; then
+    ALLOC_ID=$(aws ec2 allocate-address --domain vpc \
+               --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$APP},{Key=App,Value=$APP}]" \
+               --query AllocationId --output text 2>/dev/null || true)
+    [ -n "$ALLOC_ID" ] && log "탄력적 IP 새로 확보: $ALLOC_ID"
+  fi
+  if [ -n "$ALLOC_ID" ] && [ "$ALLOC_ID" != "None" ] && \
+     aws ec2 associate-address --allocation-id "$ALLOC_ID" --instance-id "$NEW_ID" --allow-reassociation >/dev/null 2>&1; then
+    IP=$(aws ec2 describe-addresses --allocation-ids "$ALLOC_ID" --query 'Addresses[0].PublicIp' --output text)
+    log "고정 주소 연결: $IP → $NEW_ID"
+    for _ in $(seq 1 12); do curl -s -m 5 "http://$IP/health" | grep -q "$COMMIT" && break; sleep 5; done
+  else
+    log "탄력적 IP를 쓸 수 없어 인스턴스 IP로 진행합니다 (권한 또는 한도 문제)"
+  fi
+fi
+
+# 6. 이전 버전 정리
 if [ -n "$OLD_IDS" ]; then
   log "이전 인스턴스 종료: $OLD_IDS"
   aws ec2 terminate-instances --instance-ids $OLD_IDS >/dev/null
 fi
 
 echo
-log "배포 완료 ✅  버전 $COMMIT"
+log "배포 완료 ✅  버전 $COMMIT  (모델: $MODEL_SOURCE)"
 echo "  관제 화면 : http://$IP/"
 echo "  API 문서  : http://$IP/docs"
 echo "  헬스 체크 : http://$IP/health"
