@@ -17,6 +17,7 @@ BRANCH="${BRANCH:-week8}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.small}"
 INSTANCE_PROFILE="${INSTANCE_PROFILE:-LabInstanceProfile}"   # CloudWatch 로그용 권한 (없으면 파일 로그만)
 LOG_GROUP="${LOG_GROUP:-/loginguard/predictions}"
+COLLECT_SSH="${COLLECT_SSH:-0}"   # 1: 22번 포트를 열고 서버에 실제로 들어오는 SSH 로그인 시도를 수집해 판정
 APP=loginguard
 SG_NAME=loginguard-web
 export AWS_DEFAULT_REGION="$REGION"
@@ -40,6 +41,11 @@ if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
 else
   log "보안 그룹 사용: $SG_ID"
 fi
+if [ "$COLLECT_SSH" = "1" ]; then
+  # 비밀번호 로그인은 꺼져 있으므로(Amazon Linux 기본, 키로만 접속) 시도는 기록되지만 들어올 수는 없다
+  aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null 2>&1 \
+    && log "SSH 수집용 22번 포트 열기" || log "22번 포트는 이미 열려 있음"
+fi
 
 # 2. AMI (최신 Amazon Linux 2023)
 AMI_ID=$(aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
@@ -56,7 +62,7 @@ OLD_IDS=$(aws ec2 describe-instances --filters "Name=tag:App,Values=$APP" "Name=
 
 # 3. 새 인스턴스
 UD_FILE=$(mktemp)
-sed -e "s|__REPO_URL__|$REPO_URL|" -e "s|__BRANCH__|$BRANCH|" -e "s|__REGION__|$REGION|" -e "s|__LOG_GROUP__|$LOG_GROUP|" \
+sed -e "s|__REPO_URL__|$REPO_URL|" -e "s|__BRANCH__|$BRANCH|" -e "s|__REGION__|$REGION|" -e "s|__LOG_GROUP__|$LOG_GROUP|" -e "s|__COLLECT_SSH__|$COLLECT_SSH|" \
     "$HERE/user-data.sh" > "$UD_FILE"
 
 run() {
@@ -99,3 +105,6 @@ log "배포 완료 ✅  버전 $COMMIT"
 echo "  관제 화면 : http://$IP/"
 echo "  API 문서  : http://$IP/docs"
 echo "  헬스 체크 : http://$IP/health"
+if [ "$COLLECT_SSH" = "1" ]; then
+  echo "  SSH 수집기: 켜짐 — 인터넷의 실제 SSH 로그인 시도가 관제 화면에 뜹니다 (보통 수십 분 안에 시작)"
+fi

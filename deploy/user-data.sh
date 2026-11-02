@@ -26,4 +26,21 @@ EOF
 
 docker build --build-arg APP_VERSION="${VERSION}" -t "loginguard:${VERSION}" .
 docker compose up -d --no-build
+
+# (선택) 실제 SSH 로그인 시도 수집기 — deploy.sh 를 COLLECT_SSH=1 로 실행했을 때만
+if [ "__COLLECT_SSH__" = "1" ]; then
+  cat > /etc/systemd/system/loginguard-ssh-collector.service <<'UNIT'
+[Unit]
+Description=LoginGuard SSH login attempt collector
+After=docker.service sshd.service
+[Service]
+ExecStart=/usr/bin/python3 /opt/loginguard/deploy/ssh_collector.py --api http://127.0.0.1:80
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now loginguard-ssh-collector
+fi
 echo "DEPLOY_DONE version=${VERSION}"
