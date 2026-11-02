@@ -102,6 +102,7 @@ for i in $(seq 1 "$STEPS"); do
     log "헬스 체크 성공: $BODY"
     break
   fi
+  [ $((i % 6)) -eq 0 ] && log "아직 준비 중... ($((i / 6))분 경과) — CloudShell 이 끊기지 않게 가끔 키보드를 눌러 주세요. 끊기면: bash deploy/finish.sh"
   [ "$i" -eq "$STEPS" ] && { log "${MAX_WAIT_MIN}분 안에 응답이 없습니다. 이전 버전은 유지합니다. 새 인스턴스 로그: /var/log/loginguard-deploy.log"; exit 1; }
   sleep 10
 done
